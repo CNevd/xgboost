@@ -150,6 +150,7 @@ struct CLIParam : public dmlc::Parameter<CLIParam> {
 
 DMLC_REGISTER_PARAMETER(CLIParam);
 
+// 训练阶段
 void CLITrain(const CLIParam& param) {
   if (rabit::IsDistributed()) {
     std::string pname = rabit::GetProcessorName();
@@ -158,7 +159,9 @@ void CLITrain(const CLIParam& param) {
   // load in data.
   std::unique_ptr<DMatrix> dtrain(
       DMatrix::Load(param.train_path, param.silent != 0, param.dsplit == 2));
-  std::vector<std::unique_ptr<DMatrix> > deval;
+  std::vector<std::unique_ptr<DMatrix> > deval; // 存放多份用于evaluation的数据集
+
+  // cache_mats 存放所有数据集包括train及eval
   std::vector<DMatrix*> cache_mats, eval_datasets;
   cache_mats.push_back(dtrain.get());
   for (size_t i = 0; i < param.eval_data_names.size(); ++i) {
@@ -168,6 +171,8 @@ void CLITrain(const CLIParam& param) {
     cache_mats.push_back(deval.back().get());
   }
   std::vector<std::string> eval_data_names = param.eval_data_names;
+
+  // 如果eval_train则将train数据加入eval_datasets  eval_data_names用于评估
   if (param.eval_train) {
     eval_datasets.push_back(dtrain.get());
     eval_data_names.push_back(std::string("train"));
@@ -175,6 +180,8 @@ void CLITrain(const CLIParam& param) {
   // initialize the learner.
   std::unique_ptr<Learner> learner(Learner::Create(cache_mats));
   int version = rabit::LoadCheckPoint(learner.get());
+
+  // version=0表示内容尚未被check过，需根据需要初始化
   if (version == 0) {
     // initializ the model if needed.
     if (param.model_in != "NULL") {
@@ -189,21 +196,27 @@ void CLITrain(const CLIParam& param) {
   }
   // start training.
   const double start = dmlc::GetTime();
+  // 迭代所有棵树
   for (int i = version / 2; i < param.num_round; ++i) {
     double elapsed = dmlc::GetTime() - start;
+    // 每个round（每棵树）checkpoint两次 version++两次
     if (version % 2 == 0) {
       if (param.silent == 0) {
         LOG(CONSOLE) << "boosting round " << i << ", " << elapsed << " sec elapsed";
       }
+
+      // 更新建树
       learner->UpdateOneIter(i, dtrain.get());
       if (learner->AllowLazyCheckPoint()) {
         rabit::LazyCheckPoint(learner.get());
       } else {
         rabit::CheckPoint(learner.get());
       }
-      version += 1;
+      version += 1; // 1st CheckPoint
     }
     CHECK_EQ(version, rabit::VersionNumber());
+
+    // 评估
     std::string res = learner->EvalOneIter(i, eval_datasets, eval_data_names);
     if (rabit::IsDistributed()) {
       if (rabit::GetRank() == 0) {
@@ -214,6 +227,7 @@ void CLITrain(const CLIParam& param) {
         LOG(CONSOLE) << res;
       }
     }
+    // 迭代过程中保存model信息 只在node 0 机器保存
     if (param.save_period != 0 &&
         (i + 1) % param.save_period == 0 &&
         rabit::GetRank() == 0) {
@@ -231,10 +245,10 @@ void CLITrain(const CLIParam& param) {
     } else {
       rabit::CheckPoint(learner.get());
     }
-    version += 1;
+    version += 1; // 2nd CheckPoint
     CHECK_EQ(version, rabit::VersionNumber());
   }
-  // always save final round
+  // always save final round 最终保存model信息 只在node 0 机器保存
   if ((param.save_period == 0 || param.num_round % param.save_period != 0) &&
       param.model_out != "NONE" &&
       rabit::GetRank() == 0) {
@@ -257,6 +271,7 @@ void CLITrain(const CLIParam& param) {
   }
 }
 
+// dump模型文件
 void CLIDump2Text(const CLIParam& param) {
   FeatureMap fmap;
   if (param.name_fmap != "NULL") {
@@ -285,6 +300,7 @@ void CLIDump2Text(const CLIParam& param) {
   os.set_stream(nullptr);
 }
 
+// 预测阶段
 void CLIPredict(const CLIParam& param) {
   CHECK_NE(param.test_path, "NULL")
       << "Test dataset parameter test:data must be specified.";
@@ -317,6 +333,7 @@ void CLIPredict(const CLIParam& param) {
   os.set_stream(nullptr);
 }
 
+// 任务流程
 int CLIRunTask(int argc, char *argv[]) {
   if (argc < 2) {
     printf("Usage: <config>\n");
@@ -327,17 +344,21 @@ int CLIRunTask(int argc, char *argv[]) {
   std::vector<std::pair<std::string, std::string> > cfg;
   cfg.push_back(std::make_pair("seed", "0"));
 
+  // 加载配置文件至cfg, argv[1]为.conf
   common::ConfigIterator itr(argv[1]);
   while (itr.Next()) {
     cfg.push_back(std::make_pair(std::string(itr.name()), std::string(itr.val())));
   }
 
+  // 加载配置参数至cfg
   for (int i = 2; i < argc; ++i) {
     char name[256], val[256];
     if (sscanf(argv[i], "%[^=]=%s", name, val) == 2) {
       cfg.push_back(std::make_pair(std::string(name), std::string(val)));
     }
   }
+  
+  // 使用cfg构造param
   CLIParam param;
   param.Configure(cfg);
 
