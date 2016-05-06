@@ -22,7 +22,7 @@ DMLC_REGISTRY_FILE_TAG(elementwise_metric);
 template<typename Derived>
 struct EvalEWiseBase : public Metric {
   float Eval(const std::vector<float>& preds,
-             const MetaInfo& info,
+             const MetaInfo& info,  // 数据集的信息,包含行数 列数 非零元素数 labels instance-weights等,见data.h
              bool distributed) const override {
     CHECK_NE(info.labels.size(), 0) << "label set cannot be empty";
     CHECK_EQ(preds.size(), info.labels.size())
@@ -33,14 +33,14 @@ struct EvalEWiseBase : public Metric {
     #pragma omp parallel for reduction(+: sum, wsum) schedule(static)
     for (omp_ulong i = 0; i < ndata; ++i) {
       const float wt = info.GetWeight(i);
-      sum += Derived::EvalRow(info.labels[i], preds[i]) * wt;
+      sum += Derived::EvalRow(info.labels[i], preds[i]) * wt; // 由派生类计算ith样本的evaluation=eval*weight,累加至sum 
       wsum += wt;
     }
     double dat[2]; dat[0] = sum, dat[1] = wsum;
     if (distributed) {
       rabit::Allreduce<rabit::op::Sum>(dat, 2);
     }
-    return Derived::GetFinal(dat[0], dat[1]);
+    return Derived::GetFinal(dat[0], dat[1]); // 返回派生类的GetFinal,派生类不重写的话返回sum(eval*weight)/sum(weight)
   }
   /*!
    * \brief to be implemented by subclass,
@@ -59,6 +59,8 @@ struct EvalEWiseBase : public Metric {
   }
 };
 
+// 继承于EvalEWiseBase实现多种evaluation：rmse  mae  logloss  error等
+// 隶属于EvalEWiseBase因此都是EWiseBase的evaluation
 struct EvalRMSE : public EvalEWiseBase<EvalRMSE> {
   const char *Name() const override {
     return "rmse";

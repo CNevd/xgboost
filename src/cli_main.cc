@@ -22,6 +22,7 @@
 #include "./common/sync.h"
 #include "./common/config.h"
 
+/* 主要包括参数的配置及任务调度 */
 
 namespace xgboost {
 
@@ -165,6 +166,7 @@ void CLITrain(const CLIParam& param) {
   std::vector<DMatrix*> cache_mats, eval_datasets;
   cache_mats.push_back(dtrain.get());
   for (size_t i = 0; i < param.eval_data_names.size(); ++i) {
+    // c++11 存在构造函数直接emplace_back比push_back高效
     deval.emplace_back(
         DMatrix::Load(param.eval_data_paths[i], param.silent != 0, param.dsplit == 2));
     eval_datasets.push_back(deval.back().get());
@@ -194,7 +196,7 @@ void CLITrain(const CLIParam& param) {
       learner->InitModel();
     }
   }
-  // start training.
+  // start training. 1 迭代更新模型(UpdateOneIter) 2 迭代评估(EvalOneIter)  3 model保存
   const double start = dmlc::GetTime();
   // 迭代所有棵树
   for (int i = version / 2; i < param.num_round; ++i) {
@@ -227,7 +229,7 @@ void CLITrain(const CLIParam& param) {
         LOG(CONSOLE) << res;
       }
     }
-    // 迭代过程中保存model信息 只在node 0 机器保存
+    // 迭代过程中保存model信息 只在node 0 机器保存 save_period控制保存频率
     if (param.save_period != 0 &&
         (i + 1) % param.save_period == 0 &&
         rabit::GetRank() == 0) {
@@ -342,7 +344,7 @@ int CLIRunTask(int argc, char *argv[]) {
   rabit::Init(argc, argv);
 
   std::vector<std::pair<std::string, std::string> > cfg;
-  cfg.push_back(std::make_pair("seed", "0"));
+  cfg.push_back(std::make_pair("seed", "0")); // learner中的random seed
 
   // 加载配置文件至cfg, argv[1]为.conf
   common::ConfigIterator itr(argv[1]);
